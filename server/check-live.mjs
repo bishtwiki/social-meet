@@ -4,9 +4,9 @@ import { io } from 'socket.io-client';
 const url = process.argv[2];
 if (!url) throw new Error('Usage: node check-live.mjs https://your-api.onrender.com');
 const sockets = [];
-function event(socket, name) {
+function event(socket, name, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${name} timed out`)), 20000);
+    const timer = setTimeout(() => reject(new Error(`${name} timed out`)), timeoutMs);
     socket.once(name, value => { clearTimeout(timer); resolve(value); });
   });
 }
@@ -50,6 +50,21 @@ try {
     const ended = event(b, 'match:ended');
     await emit(a, 'match:end', { roomId: ma.roomId });
     await ended;
+    if (mode === 'text') {
+      const rematchA = event(a, 'match:found', 45000);
+      const rematchB = event(b, 'match:found', 45000);
+      for (const socket of [a, b]) {
+        assert.equal((await emit(socket, 'queue:join', {
+          mode, interests, interestMode: 'strict', adultConfirmed: true,
+          requestId: crypto.randomUUID(),
+        })).ok, true);
+      }
+      const [ra, rb] = await Promise.all([rematchA, rematchB]);
+      assert.equal(ra.roomId, rb.roomId);
+      assert.notEqual(ra.roomId, ma.roomId);
+      await emit(a, 'match:end', { roomId: ra.roomId });
+      console.log('Previous pair rematched automatically after the cooldown');
+    }
     a.disconnect(); b.disconnect();
     console.log(`${mode}: WebSocket, matching, message delivery, and cleanup passed`);
   }

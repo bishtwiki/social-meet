@@ -19,6 +19,7 @@ export function createSocialMeetServer({
   sessionSecret,
   iceServers = [{ urls: "stun:stun.l.google.com:19302" }],
   interestFallbackMs = 12000,
+  rematchCooldownMs = 30000,
 } = {}) {
   if (dataDirectory) mkdirSync(dataDirectory, { recursive: true });
   const secretPath = dataDirectory && join(dataDirectory, "session-secret");
@@ -65,6 +66,10 @@ export function createSocialMeetServer({
   const queue = new Set();
   const rooms = new Map();
   const fallbackTimers = new Map();
+  const rematchTimers = new Set();
+  const rematchDelay = Number.isFinite(rematchCooldownMs)
+    ? Math.max(0, Math.ceil(rematchCooldownMs))
+    : 30000;
   const fallbackDelay = Number.isFinite(interestFallbackMs)
     ? Math.max(0, Math.ceil(interestFallbackMs))
     : 12000;
@@ -108,7 +113,11 @@ export function createSocialMeetServer({
       state.blocks[b.userId]?.includes(a.userId)
     )
       return false;
-    if (a.lastPeer === b.userId || b.lastPeer === a.userId) return false;
+    const now = Date.now();
+    if (
+      (a.lastPeer === b.userId && now < a.lastPeerUntil) ||
+      (b.lastPeer === a.userId && now < b.lastPeerUntil)
+    ) return false;
     return true;
   }
   const sharedInterests = (a, b) =>
@@ -234,12 +243,14 @@ export function createSocialMeetServer({
       return;
     }
     rooms.delete(client.roomId);
+    const rematchAt = Date.now() + rematchDelay;
     for (const memberId of [room.a, room.b]) {
       const member = clients.get(memberId);
       if (!member) continue;
       member.lastPeer = clients.get(
         memberId === room.a ? room.b : room.a,
       )?.userId;
+      member.lastPeerUntil = rematchAt;
       const roomId = member.roomId;
       member.roomId = null;
       if (memberId !== id)
@@ -249,6 +260,13 @@ export function createSocialMeetServer({
           requestId: member.requestId,
         });
     }
+    // Reconsider existing searches after the cooldown; never requeue stopped users.
+    const timer = setTimeout(() => {
+      rematchTimers.delete(timer);
+      match();
+    }, rematchDelay + 1);
+    timer.unref();
+    rematchTimers.add(timer);
     broadcastStats();
   }
   io.on("connection", (socket) => {
@@ -263,6 +281,7 @@ export function createSocialMeetServer({
       fallbackAt: null,
       requestId: null,
       lastPeer: null,
+      lastPeerUntil: 0,
     };
     clients.set(socket.id, client);
     socket.emit("session:ready", { token: `${userId}.${sign(userId)}` });
@@ -452,6 +471,8 @@ export function createSocialMeetServer({
     close: () => {
       for (const timer of fallbackTimers.values()) clearTimeout(timer);
       fallbackTimers.clear();
+      for (const timer of rematchTimers) clearTimeout(timer);
+      rematchTimers.clear();
       return new Promise((resolve) => io.close(resolve));
     },
   };

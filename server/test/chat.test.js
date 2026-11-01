@@ -162,6 +162,46 @@ test("next avoids the last stranger and connects to a new eligible person", asyn
   assert.equal(b.matches.length, 1);
 });
 
+test("two previous strangers automatically rematch after the cooldown", async (t) => {
+  const s = await service(t, { rematchCooldownMs: 80 });
+  const a = await s.connect(), b = await s.connect();
+  await pair(a, b);
+  await emit(a, "match:end");
+  const first = nextEvent(a, "match:found"), second = nextEvent(b, "match:found");
+  await joinQueue(a);
+  await joinQueue(b);
+  assert.equal(a.matches.length, 1);
+  assert.equal(b.matches.length, 1);
+  const [ma, mb] = await Promise.all([first, second]);
+  assert.equal(ma.roomId, mb.roomId);
+  assert.notEqual(ma.roomId, a.matches[0].roomId);
+});
+
+test("rematch cooldown never overrides blocks or requeues a cancelled search", async (t) => {
+  const s = await service(t, { rematchCooldownMs: 50 });
+  const a = await s.connect(), b = await s.connect();
+  await pair(a, b);
+  await emit(a, "moderation:block", { roomId: a.matches[0].roomId });
+  await joinQueue(a);
+  await joinQueue(b);
+  await new Promise(resolve => setTimeout(resolve, 90));
+  assert.equal(a.matches.length, 1);
+  assert.equal(b.matches.length, 1);
+  await emit(a, "queue:leave");
+  await emit(b, "queue:leave");
+
+  const c = await s.connect(), d = await s.connect();
+  await pair(c, d);
+  await emit(c, "match:end");
+  await joinQueue(c);
+  await joinQueue(d);
+  await emit(c, "queue:leave");
+  await new Promise(resolve => setTimeout(resolve, 90));
+  assert.equal(c.matches.length, 1);
+  assert.equal(d.matches.length, 1);
+  assert.equal((await s.health()).waiting, 1);
+});
+
 test("queue cancellation and disconnect clean up without restarting the peer camera", async (t) => {
   const s = await service(t),
     a = await s.connect(),
