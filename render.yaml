@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: social-meet-api
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.23.2
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
